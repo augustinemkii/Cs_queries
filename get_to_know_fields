@@ -1,0 +1,7 @@
+//Basic knowledge of the events and event fields, what data they gather, and etc. is the must have thing for the one who has just started, 
+for getting started I would recommend to have a go through along with each threat hunt, the documentation of logscale queries.
+After getting familiar with what are the events and what information they basically hold we can proceed with getting more information of associated event fields in those.
+
+
+#event_simpleName = InstalledBrowserExtension
+| fieldstats()
