@@ -1,0 +1,11 @@
+event_platform=Win 
+| in(field="#event_simpleName", values=[HostedServiceStopped, ServiceStopped])
+| ServiceDisplayName=/YourRMMServiceName/i
+| groupBy([aid, ComputerName, ServiceDisplayName], function=[
+    count(aid, as=eventCount), 
+    min(ContextTimeStamp, as=firstStop), 
+    max(ContextTimeStamp, as=lastStop)
+  ])
+| firstStop:=formatTime(field=firstStop, format="%Y-%m-%d %H:%M:%S")
+| lastStop:=formatTime(field=lastStop, format="%Y-%m-%d %H:%M:%S")
+| table([aid, ComputerName, ServiceDisplayName, eventCount, firstStop, lastStop], limit=1000)
