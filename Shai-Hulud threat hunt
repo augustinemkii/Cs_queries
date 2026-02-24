@@ -1,0 +1,178 @@
+//Query 1 — npm Post-Install Script Spawning Suspicious Processes
+// SANDWORMMODE: npm Post-Install Script Spawning Suspicious Child Processes
+// MITRE: T1195.001 (Supply Chain Compromise), T1059.007 (JavaScript)
+#event_simpleName=ProcessRollup2
+// Use regex OR instead of chained ~wildcard() calls
+| ParentBaseFileName=/^(npm|node)/i
+// Flag suspicious child processes that should NOT be spawned by npm install
+| in(field="FileName", values=[
+"sh", "bash", "zsh", "cmd.exe", "powershell.exe", "pwsh.exe",
+"curl", "wget", "python", "python3", "perl", "ruby",
+"ssh", "scp", "rsync", "git", "gh"
+], ignoreCase=true)
+// Capture parent/child lineage
+| ProcessLineage:=format(format="%s\n\t└ %s\n\t\t└ %s", field=[GrandParentBaseFileName, ParentBaseFileName, FileName])
+// Build Process Explorer link
+| rootURL := "https://falcon.crowdstrike.com/" /* US-1 */
+//| rootURL := "https://falcon.us-2.crowdstrike.com/" /* US-2 */
+//| rootURL := "https://falcon.laggar.gcw.crowdstrike.com/" /* Gov */
+//| rootURL := "https://falcon.eu-1.crowdstrike.com/" /* EU */
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| table([@timestamp, ComputerName, UserName, ProcessLineage, CommandLine, ProcessExplorer])
+| sort(@timestamp, order=desc)
+
+// Query 2 — Credential File Access
+// SANDWORMMODE: Node Process Accessing Sensitive Credential & Secret Files
+// MITRE: T1552.001 (Credentials in Files), T1555 (Password Stores)
+#event_simpleName=/FileOpen|FileRead/i
+| ContextBaseFileName=/^node/i
+| regex(
+"(?i)(\.npmrc|\.env|\.netrc|id_rsa|id_ed25519|id_ecdsa|authorized_keys|known_hosts|\.aws/credentials|\.azure|\.gcloud|wallet\.dat|keystore|Login\s*Data|cookies\.sqlite|key3\.db|logins\.json|\.gnupg|\.ssh/config)",
+field=TargetFileName, strict=false
+)
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| groupBy([ComputerName, UserName, ContextBaseFileName], function=[
+count(TargetFileName, as=AccessCount),
+collect([TargetFileName, CommandLine]),
+min(@timestamp, as=FirstSeen),
+max(@timestamp, as=LastSeen)
+])
+| FirstSeen := formattime(field=FirstSeen, format="%Y-%m-%d %H:%M:%S")
+| LastSeen  := formattime(field=LastSeen,  format="%Y-%m-%d %H:%M:%S")
+| sort(AccessCount, order=desc)
+
+// Query 3 — GitHub API / Cloudflare Workers Exfil
+// SANDWORMMODE: Node/npm Exfiltration via GitHub API or Cloudflare Workers
+// MITRE: T1567.001 (Exfil to Code Repository), T1102 (Web Service C2)
+(#event_simpleName=NetworkConnectIP4 OR #event_simpleName=DnsRequest)
+| ContextBaseFileName=/^node/i
+| DomainName=/api\.github\.com|raw\.githubusercontent\.com|workers\.dev|\.workers\.dev|cloudflare\.com|cdn\.cloudflare\.net/i
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| groupBy([ComputerName, UserName, ContextBaseFileName, DomainName], function=[
+count(as=ConnectionCount),
+collect([RemoteAddressIP4, CommandLine]),
+min(@timestamp, as=FirstSeen),
+max(@timestamp, as=LastSeen)
+])
+| FirstSeen := formattime(field=FirstSeen, format="%Y-%m-%d %H:%M:%S")
+| LastSeen  := formattime(field=LastSeen,  format="%Y-%m-%d %H:%M:%S")
+| sort(ConnectionCount, order=desc)
+
+// Query 4 — DNS Tunneling Detection
+// SANDWORMMODE: DNS Tunneling Exfiltration from Node.js Processes
+// MITRE: T1048.001 (Exfiltration Over DNS)
+#event_simpleName=DnsRequest
+| ContextBaseFileName=/^node/i
+| regex("^(?<subdomain>[^.]+)\.", field=DomainName, strict=false)
+| subLen := length(subdomain)
+| subLen > 30
+| !DomainName=~wildcard(pattern="*amazonaws.com")
+| !DomainName=~wildcard(pattern="*azure.com")
+| !DomainName=~wildcard(pattern="*googleapis.com")
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| groupBy([ComputerName, UserName, DomainName, subdomain, subLen, ContextBaseFileName], function=[
+count(as=QueryCount),
+min(@timestamp, as=FirstSeen),
+max(@timestamp, as=LastSeen)
+])
+| FirstSeen := formattime(field=FirstSeen, format="%Y-%m-%d %H:%M:%S")
+| LastSeen  := formattime(field=LastSeen,  format="%Y-%m-%d %H:%M:%S")
+| sort(subLen, order=desc)
+
+// Query 5 — Git/SSH Propagation
+// SANDWORMMODE: Worm Propagation via SSH/Git Push Under Victim Identity
+// MITRE: T1072 (Software Deployment Tools), T1098 (Account Manipulation)
+#event_simpleName=ProcessRollup2
+| in(field="FileName", values=["git", "ssh", "scp"], ignoreCase=true)
+// Regex OR across two different fields — valid CQL
+| GrandParentBaseFileName=/^(node|npm)/i OR ParentBaseFileName=/^(node|npm)/i
+// Collapse four wildcard OR conditions into a single regex
+| CommandLine=/push|clone|commit|remote/i
+| ProcessLineage := format(format="%s\n\t└ %s\n\t\t└ %s",
+field=[GrandParentBaseFileName, ParentBaseFileName, FileName])
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| table([@timestamp, ComputerName, UserName, ProcessLineage, CommandLine, ProcessExplorer])
+| sort(@timestamp, order=desc)
+
+// Query 6 — AI Tool Config Injection
+// SANDWORMMODE: Rogue MCP Server Injection into AI Coding Tool Configs
+// MITRE: T1195.001, T1565.001 (Stored Data Manipulation)
+#event_simpleName=/Written|FileCreate/i
+| ContextBaseFileName=/^node/i
+| regex(
+"(?i)(\.claude|claude_desktop|cursor|\.vscode|Code/User|mcp_servers?|mcp\.json|cline_mcp|\.cline|claude\.json|settings\.json)",
+field=TargetFileName, strict=false
+)
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| table([@timestamp, ComputerName, UserName, ContextBaseFileName, TargetFileName, ProcessExplorer])
+| sort(@timestamp, order=desc)
+
+// Query 7 — Obfuscated Payload Execution
+// SANDWORMMODE: Obfuscated/Encoded Payload Execution from Node.js
+// MITRE: T1027 (Obfuscated Files), T1059.007 (JavaScript)
+#event_simpleName=ProcessRollup2
+// Regex OR across two fields — valid CQL
+| ParentBaseFileName=/^node/i OR GrandParentBaseFileName=/^node/i
+| regex(
+"(?i)(eval\s*\(|Buffer\.from\s*\(|atob\s*\(|fromCharCode|\.toString\s*\(\s*['\"]?base64|require\s*\(\s*['\"]child_process['\"]|execSync\s*\(|spawnSync\s*\()",
+field=CommandLine, strict=false
+)
+| ProcessLineage := format(format="%s\n\t└ %s\n\t\t└ %s",
+field=[GrandParentBaseFileName, ParentBaseFileName, FileName])
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| table([@timestamp, ComputerName, UserName, ProcessLineage, CommandLine, ProcessExplorer])
+| sort(@timestamp, order=desc)
+
+// Query 8 — SANDWORM_* Environment Variable Detection
+// SANDWORMMODE: SANDWORM_* Operator Control Variable Detection
+// MITRE: T1195.001, T1059.007
+#event_simpleName=ProcessRollup2
+// Collapsed two same-field wildcard OR conditions into one regex
+| CommandLine=/SANDWORM_|SANDWORMMODE/i
+| ProcessLineage := format(format="%s\n\t└ %s\n\t\t└ %s",
+field=[GrandParentBaseFileName, ParentBaseFileName, FileName])
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| table([@timestamp, ComputerName, UserName, ProcessLineage, CommandLine, ProcessExplorer])
+| sort(@timestamp, order=desc)
+
+// Query 9 — Destructive Dead-Switch Detection
+// SANDWORMMODE: Destructive Dead-Switch — Home Directory Wipe Attempt
+// MITRE: T1485 (Data Destruction), T1059.004
+#event_simpleName=ProcessRollup2
+| in(field="FileName", values=["rm", "shred", "wipe", "del", "rmdir"], ignoreCase=true)
+// Regex OR across two different fields — valid CQL
+| GrandParentBaseFileName=/^node/i OR ParentBaseFileName=/^node/i
+| regex(
+"(?i)(rm\s+(-rf?|-fr?)\s+(~|/home/|/root/|\$HOME|\%USERPROFILE\%)|rmdir\s+/s\s+/q)",
+field=CommandLine, strict=false
+)
+| ProcessLineage := format(format="%s\n\t└ %s\n\t\t└ %s",
+field=[GrandParentBaseFileName, ParentBaseFileName, FileName])
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| table([@timestamp, ComputerName, UserName, ProcessLineage, CommandLine, ProcessExplorer])
+| sort(@timestamp, order=desc)
+
+//Query 10 — Git Hook Persistence
+// SANDWORMMODE: Git Hook Persistence — Infection Propagation via .git/hooks
+// MITRE: T1546 (Event Triggered Execution), T1195.001
+#event_simpleName=/Written|FileCreate/i
+| ContextBaseFileName=/^node/i
+| regex("(?i)(\.git[/\\\\]hooks[/\\\\](pre-commit|post-commit|post-checkout|post-merge|pre-push|prepare-commit-msg))", field=TargetFileName, strict=false)
+| rootURL := "https://falcon.crowdstrike.com/"
+| format("[Process Explorer](%sgraphs/process-explorer/tree?id=pid:%s:%s)", field=["rootURL","aid","ContextProcessId"], as="ProcessExplorer")
+| groupBy([ComputerName, UserName, ContextBaseFileName, TargetFileName], function=[
+count(as=HookWriteCount),
+min(@timestamp, as=FirstSeen),
+max(@timestamp, as=LastSeen)
+])
+| FirstSeen := formattime(field=FirstSeen, format="%Y-%m-%d %H:%M:%S")
+| LastSeen  := formattime(field=LastSeen,  format="%Y-%m-%d %H:%M:%S")
+| sort(HookWriteCount, order=desc)
