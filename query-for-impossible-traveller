@@ -1,0 +1,24 @@
+####query for advanced event search
+#event_simpleName=UserLogon LogonType=10 event_platform=Win RemoteAddressIP4=*
+| !cidr(RemoteAddressIP4, subnet=["224.0.0.0/4", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1/32", "169.254.0.0/16", "0.0.0.0/32"])
+| ipLocation(RemoteAddressIP4)
+| rename([[RemoteAddressIP4.country, Country], [RemoteAddressIP4.city, City], [RemoteAddressIP4.state, State], [RemoteAddressIP4.lat, Latitude], [RemoteAddressIP4.lon, Longitude]])
+| table([LogonTime, cid, aid, ComputerName, UserName, UserSid, RemoteAddressIP4, Country, State, City, Latitude, Longitude], limit=20000)
+
+####feeding results of this query to LLM of charlotte AI
+####I am referring to following modal or prompt
+The following results are Windows RDP login events for the past 24 hours. 
+
+${Full search results in raw JSON string} 
+
+Using UserSid and UserName as a key pair, please evaluate the logins and look for signs of account abuse. 
+
+Signs of abuse can include, but are not limited to, impossible time to travel based on two logon times, many consecutive logins to one or more system, or logins from unexpected countries based on a key pairs previous history. 
+
+Create an email to a Security Operations Center that details any malicious or suspicious findings. Please include a confidence level of your findings. 
+
+Please also include an executive summary at the top of the email that includes how many total logins and unique accounts you analyzed. There is no need for a greeting or closing to the email.
+
+Please format in HTML.
+
+####at the end you should have the summrazied view of the activity that are present in the logs we got from advanced event search query/.
