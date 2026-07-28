@@ -1,0 +1,3 @@
+#event_simpleName=UserIdentity
+| aid=?aid LogonType=10
+|table([@timestamp,UserName,UserPrincipal,LogonServer],limit=1000)
