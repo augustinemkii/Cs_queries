@@ -1,0 +1,63 @@
+#event_simpleName=ProcessRollup2 event_platform=Win
+// Optional scoping for testing on a single host
+| ComputerName=?ComputerName
+// Normalise the command line once for all subsequent matching
+| CmdLower := lower("CommandLine")
+// --- Recovery-inhibition classification ---------------------------------
+| case {
+    // Shadow copy deletion via vssadmin
+    ImageFileName=/\\vssadmin\.exe$/i
+      AND CmdLower=/delete\s+shadows/
+      | Hypothesis := "H1_VSSADMIN_SHADOW_DELETE" | Confidence := "High";
+
+    // Shadow storage resize to force silent shadow deletion (401 KB trick)
+    ImageFileName=/\\vssadmin\.exe$/i
+      AND CmdLower=/resize\s+shadowstorage/
+      | Hypothesis := "H2_VSSADMIN_SHADOWSTORAGE_RESIZE" | Confidence := "Medium";
+
+    // Shadow copy deletion via WMIC
+    ImageFileName=/\\wmic\.exe$/i
+      AND CmdLower=/shadowcopy/ AND CmdLower=/delete/
+      | Hypothesis := "H3_WMIC_SHADOW_DELETE" | Confidence := "High";
+
+    // Shadow copy deletion via PowerShell WMI/CIM
+    ImageFileName=/\\(powershell|powershell_ise|pwsh)\.exe$/i
+      AND CmdLower=/win32_shadowcopy|get-wmiobject.{0,40}shadowcopy|get-ciminstance.{0,40}shadowcopy/
+      AND CmdLower=/delete|remove/
+      | Hypothesis := "H4_POWERSHELL_SHADOW_DELETE" | Confidence := "High";
+
+    // Backup catalog / system state backup destruction
+    ImageFileName=/\\wbadmin\.exe$/i
+      AND CmdLower=/delete\s+(catalog|systemstatebackup|backup)/
+      | Hypothesis := "H5_WBADMIN_BACKUP_DELETE" | Confidence := "High";
+
+    // Disable Windows Recovery Environment / automatic repair
+    ImageFileName=/\\bcdedit\.exe$/i
+      AND CmdLower=/recoveryenabled\s+(no|off)|bootstatuspolicy\s+ignoreallfailures/
+      | Hypothesis := "H6_BCDEDIT_RECOVERY_TAMPER" | Confidence := "High";
+
+    // USN change journal deletion (anti-forensics, common in ransomware playbooks)
+    ImageFileName=/\\fsutil\.exe$/i
+      AND CmdLower=/usn\s+deletejournal/
+      | Hypothesis := "H7_FSUTIL_USN_DELETE" | Confidence := "Medium";
+
+    * | Hypothesis := "NO_MATCH";
+}
+| Hypothesis != "NO_MATCH"
+// --- Output --------------------------------------------------------------
+| groupBy([aid, ComputerName], function=[
+    count(as=PrecursorEvents),
+    count(Hypothesis, distinct=true, as=DistinctTechniques),
+    min(@timestamp, as=FirstSeen),
+    max(@timestamp, as=LastSeen),
+    collect([Hypothesis, Confidence, UserName, ImageFileName, CommandLine, ParentBaseFileName])
+  ], limit=10000)
+// Multiple distinct recovery-inhibition techniques on one host is near-certain ransomware staging
+| case {
+    DistinctTechniques >= 2 | Priority := "CRITICAL - multiple recovery-inhibition techniques";
+    PrecursorEvents >= 3    | Priority := "HIGH - repeated recovery-inhibition activity";
+    *                       | Priority := "MEDIUM - single event, validate context";
+}
+| FirstSeen := formatTime("%F %T %Z", field=FirstSeen)
+| LastSeen := formatTime("%F %T %Z", field=LastSeen)
+| sort(DistinctTechniques, order=desc)
