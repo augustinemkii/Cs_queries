@@ -1,0 +1,7 @@
+| #Vendor = crowdstrike
+| #repo = "base_sensor"
+| "#event_simpleName" = "ModuleLoadV3DetectInfo"
+| aid=?aid
+//| ComputerName="XXXXX"//Enter computer name to check for specific endpoint
+| groupBy([ComputerName,aid], function=[collect(FileName),collect(FilePath),collect(ImageFileName),collect(ParentCommandLine),count(as=total_module_loads)])
+| sort(total_module_loads, order=desc)
