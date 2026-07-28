@@ -1,0 +1,18 @@
+| #Vendor = crowdstrike
+| #repo = "base_sensor"
+| "#event_simpleName" = "PackedExecutableWritten"
+| aid = ?aid
+//| ComputerName ="XXXX" //Put your hostname here to check it for specfic host.
+
+| case {
+    wildcard(field=FilePath, pattern="*\\Temp\\*")         | location_risk := "High - Temp Directory" ;
+    wildcard(field=FilePath, pattern="*\\AppData\\*")      | location_risk := "High - AppData" ;
+    wildcard(field=FilePath, pattern="*\\Windows\\*")      | location_risk := "Critical - Windows Directory" ;
+    wildcard(field=FilePath, pattern="*\\System32\\*")     | location_risk := "Critical - System32" ;
+    wildcard(field=FilePath, pattern="*\\Startup\\*")      | location_risk := "Critical - Startup Folder" ;
+    wildcard(field=FilePath, pattern="*\\Downloads\\*")    | location_risk := "Medium - Downloads" ;
+    *                                                       | location_risk := "Low - Standard Path"
+  }
+
+| groupBy([ComputerName], function=[collect(FileName),collect(FilePath),collect(TargetFileName),collect(SHA256HashData),collect(location_risk),count(as=total_packed_writes)])
+| sort(total_packed_writes, order=desc)
