@@ -1,0 +1,10 @@
+event_platform=win event_simpleName=UserLogonFailed2 
+| eval SubStatus_hex=tostring(SubStatus_decimal,"hex")
+| rename SubStatus_decimal as Status_code_decimal
+| lookup local=true LogonType.csv LogonType_decimal OUTPUT LogonType
+| lookup local=true win_status_codes.csv Status_code_decimal OUTPUT Description 
+| stats count(aid) as failCount dc(aid) as endpointsAttemptedAgainst earliest(ContextTimeStamp_decimal) as firstLogonAttempt latest(ContextTimeStamp_decimal) as lastLogonAttempt by RemoteIP 
+| eval firstLastDeltaHours=round((lastLogonAttempt-firstLogonAttempt)/60/60,2)
+| eval logonAttemptsPerHour=round(failCount/firstLastDeltaHours,0)
+| convert ctime(firstLogonAttempt) ctime(lastLogonAttempt)
+| sort - failCount 
